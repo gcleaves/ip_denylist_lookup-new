@@ -10,3 +10,4 @@ test_data.csv.tmp
 test_data.csv.backup
 scratch.md
 ipFile.backup
+*.csv

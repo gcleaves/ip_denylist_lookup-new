@@ -11,3 +11,5 @@ test_data.csv.backup
 scratch.md
 ipFile.backup
 *.csv
+config.json
+*.zip

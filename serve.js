@@ -10,6 +10,7 @@ const fileUpload = require('express-fileupload');
 const rateLimit = require('express-rate-limit');
 const { createWebSocketServer } = require('./websocket');
 const http = require('http');
+const dns = require('dns').promises;
 
 const app = express();
 const router = express.Router();
@@ -78,35 +79,152 @@ function closeRedis() {
 }
 
 /**
- * Lookup IP address in Redis
+ * Check if DroneBL lookup should be enabled based on query parameter
+ * @param {Object} query - Request query object
+ * @returns {boolean} True if DroneBL should be included
+ */
+function shouldIncludeDroneBL(query) {
+    return [1, '1', true, 'true'].includes(query.dronebl);
+}
+
+/**
+ * Lookup IP address in DroneBL via DNS
  * @param {string} ip - IP address to lookup
+ * @returns {Promise<Object|null>} DroneBL result with type code, or null if not listed
+ */
+const lookupDroneBL = async (ip) => {
+    if (!ipTools.isValidIpv4(ip)) {
+        return null;
+    }
+
+    try {
+        // Reverse the IP octets: 193.46.255.99 -> 99.255.46.193
+        const parts = ip.split('.');
+        const reversedIP = parts.reverse().join('.');
+        const dnsblHostname = `${reversedIP}.dnsbl.dronebl.org`;
+
+        // Query DNS A record
+        const addresses = await dns.resolve4(dnsblHostname);
+        
+        if (addresses && addresses.length > 0) {
+            // DroneBL returns an IP address where the last octet is the type code
+            // Extract the type code from the first A record
+            const typeIP = addresses[0];
+            const typeParts = typeIP.split('.');
+            const typeCode = parseInt(typeParts[typeParts.length - 1], 10);
+            
+            return {
+                name: `dronebl_type_${typeCode}`,
+                source: 'dronebl',
+                type: typeCode
+            };
+        }
+        
+        return null;
+    } catch (error) {
+        // ENOTFOUND or ENODATA means IP is not listed (this is normal)
+        if (error.code === 'ENOTFOUND' || error.code === 'ENODATA') {
+            return null;
+        }
+        // Log other DNS errors but don't fail the lookup
+        logger.warn({ error: error.message, ip, code: error.code }, 'DroneBL DNS lookup error');
+        return null;
+    }
+};
+
+/**
+ * Lookup IP address in Redis and optionally DroneBL
+ * @param {string} ip - IP address to lookup
+ * @param {boolean} includeDroneBL - Whether to include DroneBL DNS lookup (default: false)
  * @returns {Promise<Object|null|false>} Lookup result
  */
-const lookupIP = async (ip) => {
+const lookupIP = async (ip, includeDroneBL = false) => {
     if (!ipTools.isValidIpv4(ip)) {
         return false;
     }
 
     try {
         const redisClient = getRedis();
-        const long = ipTools.toLong(ip);
-        const answer = await redisClient.zrangebyscore(
-            redisPrefix + 'ranges', 
-            long, 
-            '+inf', 
-            'LIMIT', 
-            0, 
-            1
-        );
+        // Include DroneBL flag in cache key so cached results are separate
+        const cacheKey = redisPrefix + 'cache:' + ip + (includeDroneBL ? ':dronebl' : '');
+        const cacheTTL = 48 * 60 * 60; // 48 hours in seconds
 
+        // Check cache first
+        const cachedResult = await redisClient.get(cacheKey);
+        if (cachedResult !== null) {
+            // Cache hit - return immediately without Redis skip list or DNS lookup
+            // Handle both null (not found) and result object
+            if (cachedResult === 'null') {
+                return null;
+            }
+            try {
+                return JSON.parse(cachedResult);
+            } catch (parseError) {
+                // If cache value is corrupted, log and continue to fresh lookup
+                logger.warn({ error: parseError.message, ip }, 'Failed to parse cached result, performing fresh lookup');
+            }
+        }
+
+        // Cache miss - perform lookup
+        const long = ipTools.toLong(ip);
+        
+        // Query Redis skip list and optionally DroneBL in parallel
+        const queries = [
+            redisClient.zrangebyscore(
+                redisPrefix + 'ranges', 
+                long, 
+                '+inf', 
+                'LIMIT', 
+                0, 
+                1
+            )
+        ];
+        
+        if (includeDroneBL) {
+            queries.push(lookupDroneBL(ip));
+        }
+        
+        const results = await Promise.all(queries);
+        const answer = results[0];
+        const droneblResult = includeDroneBL ? results[1] : null;
+
+        let redisResult = null;
         if (answer && answer.length > 0) {
             const item = answer[0];
             const [startInt, endInt, lists] = item.split('|');
             if (long >= parseInt(startInt) && long <= parseInt(endInt)) {
-                return JSON.parse(lists);
+                redisResult = JSON.parse(lists);
             }
         }
-        return null;
+
+        // Merge results
+        let result = null;
+        if (redisResult === null && droneblResult === null) {
+            result = null;
+        } else {
+            // Initialize result object
+            result = redisResult || { list: [], geo: [] };
+            
+            // Ensure list array exists
+            if (!result.list) {
+                result.list = [];
+            }
+
+            // Add DroneBL result if found
+            if (droneblResult) {
+                result.list.push(droneblResult);
+            }
+        }
+
+        // Store result in cache with 48-hour TTL
+        // Store 'null' as string for null results, JSON stringify for objects
+        const cacheValue = result === null ? 'null' : JSON.stringify(result);
+        await redisClient.setex(cacheKey, cacheTTL, cacheValue).catch(err => {
+            // Log cache write errors but don't fail the lookup
+            logger.warn({ error: err.message, ip }, 'Failed to write to cache');
+        });
+
+        return result;
     } catch (error) {
         logger.error({ error: error.message, ip }, 'Lookup IP error');
         throw error;
@@ -355,8 +473,9 @@ exports.serve = (port, rp, prefix) => {
                 ips = req.body.split(/,|\r?\n/).filter(ip => ip.trim());
             }
 
+            const includeDroneBL = shouldIncludeDroneBL(req.query);
             await Promise.all(ips.map(async ip => {
-                const list = await lookupIP(ip);
+                const list = await lookupIP(ip, includeDroneBL);
                 response[ip] = (list === null) ? [] : list;
             }));
 
@@ -474,8 +593,9 @@ exports.serve = (port, rp, prefix) => {
             res.header('Content-Type', contentType);
             res.attachment(fileName);
 
+            const includeDroneBL = shouldIncludeDroneBL(req.query);
             await Promise.all(ips.map(async ip => {
-                const list = await lookupIP(ip);
+                const list = await lookupIP(ip, includeDroneBL);
                 response[ip] = (list === null) ? [] : list;
 
                 if (fileType === 'csv') {
@@ -501,7 +621,8 @@ exports.serve = (port, rp, prefix) => {
         try {
             const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
             const response = { ip };
-            const ipLists = await lookupIP(ip);
+            const includeDroneBL = shouldIncludeDroneBL(req.query);
+            const ipLists = await lookupIP(ip, includeDroneBL);
             response.result = ipLists || {};
 
             if ([1, '1', true, 'true'].includes(req.query.csv)) {
@@ -530,7 +651,8 @@ exports.serve = (port, rp, prefix) => {
     router.get('/:ip', async (req, res) => {
         try {
             const ip = req.params.ip;
-            const ipLists = await lookupIP(ip);
+            const includeDroneBL = shouldIncludeDroneBL(req.query);
+            const ipLists = await lookupIP(ip, includeDroneBL);
 
             if (ipLists === false) {
                 return res.status(422).json({ error: 'invalid ipv4' });

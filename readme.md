@@ -11,6 +11,8 @@ Digging into the Internet suggested that breaking the IP ranges into non-overlap
 ## Features
 
 - **High Performance**: Sub-3ms IP lookups using Redis sorted sets
+- **Result Caching**: 48-hour cache for IP lookup results (no Redis skip list or DNS lookup required for cached IPs)
+- **DroneBL Integration**: Optional DNS-based IP reputation lookup via [DroneBL](https://dronebl.org/) (disabled by default for performance)
 - **WebSocket Support**: Real-time IP lookups via WebSocket protocol
 - **Rate Limiting**: Configurable rate limiting for HTTP and WebSocket endpoints
 - **Structured Logging**: Pino-based structured logging for better observability
@@ -193,6 +195,7 @@ Lookup the requesting client's IP address.
 **Query Parameters:**
 - `csv` - Return CSV format (set to `1`, `true`, or `'true'`)
 - `header` - Include CSV header (default: `true`, set to `0` or `false` to disable)
+- `dronebl` - Include DroneBL DNS lookup (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
 
 **Response:**
 ```json
@@ -218,6 +221,7 @@ Lookup a specific IP address.
 **Query Parameters:**
 - `csv` - Return CSV format (set to `1`, `true`, or `'true'`)
 - `header` - Include CSV header (default: `true`)
+- `dronebl` - Include DroneBL DNS lookup (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
 
 **Response:**
 ```json
@@ -246,6 +250,7 @@ Batch lookup multiple IP addresses.
 **Query Parameters:**
 - `json` - Return JSON format (set to `1`, `true`, or `'true'`). When set, response will be JSON regardless of request `Content-Type`
 - `header` - Include CSV header when returning CSV format (default: `true`, set to `0` or `false` to disable)
+- `dronebl` - Include DroneBL DNS lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
 
 **Response Format:**
 - **JSON** (default when `Content-Type: application/json` or `?json=true`):
@@ -277,6 +282,10 @@ Upload a file containing IP addresses for batch lookup.
 - Multipart form data with field `ipList`
 - File can be `.json` (JSON array) or text (comma/newline-separated)
 
+**Query Parameters:**
+- `header` - Include CSV header when returning CSV format (default: `true`, set to `0` or `false` to disable)
+- `dronebl` - Include DroneBL DNS lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
+
 **Response:**
 - Returns results in same format as uploaded file (JSON or CSV)
 
@@ -293,6 +302,7 @@ Connect to `ws://localhost:3000/ws` (or your configured prefix + `/ws`).
 {
   "type": "lookup",
   "ip": "192.168.1.1",
+  "dronebl": false,
   "requestId": "optional-request-id"
 }
 ```
@@ -302,9 +312,12 @@ Connect to `ws://localhost:3000/ws` (or your configured prefix + `/ws`).
 {
   "type": "batch",
   "ips": ["192.168.1.1", "10.0.0.1"],
+  "dronebl": false,
   "requestId": "optional-request-id"
 }
 ```
+
+**Note:** The `dronebl` field is optional and defaults to `false`. Set to `true` to include DroneBL DNS lookup (slower but includes additional reputation data).
 
 3. **Ping:**
 ```json
@@ -491,10 +504,12 @@ The service maintains backward compatibility with existing HTTP API endpoints. K
 
 ## Performance Characteristics
 
-- **Lookup Speed**: < 3ms per IP lookup (typical)
+- **Lookup Speed**: < 3ms per IP lookup (typical, cached results are faster)
+- **Cached Lookups**: Sub-millisecond response for cached IPs (48-hour cache TTL)
 - **Throughput**: Handles 1000+ requests/second per instance
 - **Memory**: ~1GB at rest, ~2.7GB during loading
-- **Redis Storage**: ~420MB for full Firehol dataset
+- **Redis Storage**: ~420MB for full Firehol dataset + cache storage
+- **DroneBL Performance**: DNS lookups add ~50-200ms latency (disabled by default)
 
 ## Troubleshooting
 

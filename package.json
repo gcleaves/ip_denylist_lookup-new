@@ -4,27 +4,67 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest --testPathPattern=unit",
+    "test:integration": "jest --testPathPattern=integration",
+    "test:ci": "jest --ci --coverage --maxWorkers=2"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "axios": "^0.21.0",
-    "cron": "^1.8.2",
-    "csv": "^5",
-    "csv-parser": "^2.3.3",
-    "date-fns": "^2.16.1",
-    "express": "^4.17.1",
+    "axios": "^1.7.0",
+    "cron": "^3.1.7",
+    "csv": "^6.3.10",
+    "csv-parser": "^3.0.0",
+    "date-fns": "^3.6.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.0",
     "express-fileupload": "^1.2.0",
-    "ioredis": "^4.19.1",
+    "express-rate-limit": "^7.4.0",
+    "ioredis": "^5.3.2",
     "ip_denylist_plugin_example": "file:./plugins/example",
     "ip_denylist_plugin_firehol": "file:./plugins/firehol",
+    "ip_denylist_plugin_spamhaus": "file:./plugins/spamhaus",
+    "ip_denylist_plugin_cloudflare": "file:./plugins/cloudflare",
+    "ip_denylist_plugin_aws": "file:./plugins/aws",
+    "ip_denylist_plugin_google_cloud": "file:./plugins/google_cloud",
+    "ip_denylist_plugin_fastly": "file:./plugins/fastly",
     "ip_denylist_plugin_maxmind_lite_asn": "file:./plugins/maxmind_lite_asn",
     "ip_denylist_plugin_maxmind_lite_city": "file:./plugins/maxmind_lite_city",
     "ip_denylist_plugin_udger": "file:./plugins/udger",
     "ip_denylist_plugin_udger_stale": "file:./plugins/udger_stale",
     "ip-utils": "^2.4.0",
-    "minimist": "^1.2.5"
+    "joi": "^17.13.0",
+    "minimist": "^1.2.5",
+    "pino": "^9.3.0",
+    "pino-pretty": "^11.2.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "@types/jest": "^29.5.11"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coveragePathIgnorePatterns": [
+      "/node_modules/",
+      "/test/"
+    ],
+    "testMatch": [
+      "**/__tests__/**/*.test.js",
+      "**/?(*.)+(spec|test).js"
+    ],
+    "collectCoverageFrom": [
+      "*.js",
+      "plugins/**/*.js",
+      "!**/node_modules/**",
+      "!**/test/**",
+      "!jest.config.js"
+    ],
+    "setupFilesAfterEnv": ["<rootDir>/test/setup.js"]
   }
 }

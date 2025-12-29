@@ -18,48 +18,40 @@ function ip2int(ip) {
 }
 
 /**
- * Default Firehol list URLs
+ * Default Spamhaus list URLs
+ * Note: edrop.txt has been merged into drop.txt
  */
-const DEFAULT_FIREHOL_LISTS = [
-    'https://iplists.firehol.org/files/firehol_level1.netset',
-    'https://iplists.firehol.org/files/firehol_level2.netset',
-    'https://iplists.firehol.org/files/firehol_level3.netset',
-    'https://iplists.firehol.org/files/firehol_level4.netset',
-    //'https://iplists.firehol.org/files/firehol_proxies.netset', // included in anonymous.netset
-    'https://iplists.firehol.org/files/firehol_webclient.netset',
-    'https://iplists.firehol.org/files/firehol_webserver.netset',
-    'https://iplists.firehol.org/files/firehol_abusers_1d.netset',
-    'https://iplists.firehol.org/files/firehol_abusers_30d.netset',
-    'https://iplists.firehol.org/files/firehol_anonymous.netset'
+const DEFAULT_SPAMHAUS_LISTS = [
+    'https://www.spamhaus.org/drop/drop.txt'
 ];
 
 /**
- * Firehol IP list plugin
- * Downloads and processes IP lists from Firehol
+ * Spamhaus IP list plugin
+ * Downloads and processes IP lists from Spamhaus DROP
  */
-class FireholPlugin extends BasePlugin {
+class SpamhausPlugin extends BasePlugin {
     /**
      * @param {Object} options - Plugin options
      * @param {string} options.outputFile - Output file path
-     * @param {string[]} [options.listArray] - Array of Firehol list URLs (defaults to DEFAULT_FIREHOL_LISTS)
+     * @param {string[]} [options.listArray] - Array of Spamhaus list URLs (defaults to DEFAULT_SPAMHAUS_LISTS)
      */
     constructor(options = {}) {
         super({
-            name: 'firehol',
+            name: 'spamhaus',
             version: '1.0.0',
-            description: 'Downloads and processes IP lists from Firehol',
+            description: 'Downloads and processes IP lists from Spamhaus DROP',
             abortOnFail: options.abortOnFail !== false
         });
         this.outputFile = options.outputFile;
-        this.listArray = options.listArray || DEFAULT_FIREHOL_LISTS;
+        this.listArray = options.listArray || DEFAULT_SPAMHAUS_LISTS;
         this._interval = null;
     }
 
     /**
-     * Download a single file from Firehol
+     * Download a single file from Spamhaus
      * @param {string} fileUrl - URL to download
      * @param {fs.WriteStream} writer - Write stream for output
-     * @param {string} tag - Tag name for the list
+     * @param {string} tag - Tag name for the list (e.g., "drop" or "edrop")
      * @returns {Promise<boolean>}
      */
     async downloadFile(fileUrl, writer, tag) {
@@ -67,7 +59,7 @@ class FireholPlugin extends BasePlugin {
         const meta = {
             type: "list",
             name: tag,
-            source: "firehol"
+            source: "spamhaus"
         };
         const metadata = JSON.stringify(meta);
 
@@ -76,7 +68,10 @@ class FireholPlugin extends BasePlugin {
                 method: 'get',
                 url: fileUrl,
                 responseType: 'stream',
-                timeout: 30000
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'IP-Denylist-Lookup/1.0'
+                }
             });
 
             return new Promise((resolve, reject) => {
@@ -84,24 +79,57 @@ class FireholPlugin extends BasePlugin {
                 readline.createInterface({
                     input: response.data
                 }).on('line', data => {
+                    // Skip empty lines
+                    if (!data || data.trim().length === 0) return;
+                    
+                    // Skip comment lines (Spamhaus uses ; or # for comments at start of line)
+                    const trimmed = data.trim();
+                    if (trimmed[0] === ';' || trimmed[0] === '#') return;
+                    
+                    // Extract IP/CIDR part (before semicolon or space, which may have comments after)
+                    // Format: "1.10.16.0/20 ; SBL256894" or "1.19.0.0/16 ; SBL434604"
+                    const ipPart = trimmed.split(/[;\s]/)[0].trim();
+                    
+                    // Skip if no valid IP/CIDR found
+                    if (!ipPart || ipPart.length === 0) return;
+                    
+                    // Validate it looks like an IP or CIDR
+                    if (!ipPart.match(/^[\d\.\/]+$/)) return;
+                    
                     let line;
-                    if(data[0]==='#') return;
                     const format = `%s|%s|%s\n`;
-                    if(data.includes('/')) {
-                        const cidrInfo = ip.cidrInfo(data);
-                        line = util.format(format, 
-                            Math.min(ip2int(cidrInfo.firstHostAddress),ip2int(cidrInfo.lastHostAddress)),
-                            Math.max(ip2int(cidrInfo.firstHostAddress),ip2int(cidrInfo.lastHostAddress)), 
-                            metadata);
+                    
+                    if (ipPart.includes('/')) {
+                        // CIDR block
+                        try {
+                            const cidrInfo = ip.cidrInfo(ipPart);
+                            line = util.format(format, 
+                                Math.min(ip2int(cidrInfo.firstHostAddress), ip2int(cidrInfo.lastHostAddress)),
+                                Math.max(ip2int(cidrInfo.firstHostAddress), ip2int(cidrInfo.lastHostAddress)), 
+                                metadata);
+                        } catch (e) {
+                            this.logger.warn({ line: ipPart, error: e.message }, 'Failed to parse CIDR');
+                            return; // Skip invalid CIDR
+                        }
                     } else {
-                        line = util.format(format, ip2int(data), ip2int(data), metadata);
+                        // Single IP address
+                        try {
+                            if (!ip.isValidIpv4(ipPart)) {
+                                this.logger.warn({ ip: ipPart }, 'Invalid IP address, skipping');
+                                return;
+                            }
+                            line = util.format(format, ip2int(ipPart), ip2int(ipPart), metadata);
+                        } catch (e) {
+                            this.logger.warn({ line: ipPart, error: e.message }, 'Failed to parse IP');
+                            return; // Skip invalid IP
+                        }
                     }
                     writer.write(line);
-                }).on('error',(e) => {
+                }).on('error', (e) => {
                     error = e;
                     writer.close();
-                    reject(new Error(`firehol failure: ${e.message}`));
-                }).on('close',()=> {
+                    reject(new Error(`spamhaus failure: ${e.message}`));
+                }).on('close', () => {
                     if (!error) {
                         this.logger.info({ url: fileUrl, tag }, 'Finished download');
                         resolve(true);
@@ -124,7 +152,7 @@ class FireholPlugin extends BasePlugin {
         }
 
         this._interval = setInterval(() => {
-            this.logger.debug('Still working on firehol');
+            this.logger.debug('Still working on spamhaus');
         }, 5000);
 
         try {
@@ -139,12 +167,12 @@ class FireholPlugin extends BasePlugin {
             const writer = fs.createWriteStream(this.outputFile, {flags:'a'});
             
             writer.on('close', () => {
-                this.logger.info('Firehol writer closed');
+                this.logger.info('Spamhaus writer closed');
                 if (this._interval) {
                     clearInterval(this._interval);
                     this._interval = null;
                 }
-                resolve("firehol");
+                resolve("spamhaus");
             });
             
             writer.on('error', (err) => {
@@ -152,20 +180,25 @@ class FireholPlugin extends BasePlugin {
                     clearInterval(this._interval);
                     this._interval = null;
                 }
-                this.logger.error({ error: err.message }, 'Firehol writer error');
-                reject(new Error("firehol failed"));
+                this.logger.error({ error: err.message }, 'Spamhaus writer error');
+                reject(new Error("spamhaus failed"));
             });
 
             try {
+                // Download all lists in parallel
                 await Promise.all(
-                    this.listArray.map(f => 
-                        this.downloadFile(f, writer, path.posix.basename(f).replace(/\.(?:ip|net)set/,""))
-                    )
+                    this.listArray.map(f => {
+                        // Extract list name from URL (drop or edrop)
+                        const urlParts = f.split('/');
+                        const filename = urlParts[urlParts.length - 1];
+                        const tag = filename.replace(/\.txt$/, '').toLowerCase();
+                        return this.downloadFile(f, writer, tag);
+                    })
                 );
                 writer.close();
             } catch (e) {
                 writer.close();
-                reject(new Error(`firehol failure: ${e.message}`));
+                reject(new Error(`spamhaus failure: ${e.message}`));
             }
         });
     }
@@ -202,11 +235,11 @@ class FireholPlugin extends BasePlugin {
 }
 
 // Export both class and legacy function for backward compatibility
-module.exports = FireholPlugin;
+module.exports = SpamhausPlugin;
 
 // Legacy export for backward compatibility
 module.exports.legacy = async (outputFile, listArray) => {
-    const plugin = new FireholPlugin({ outputFile, listArray });
+    const plugin = new SpamhausPlugin({ outputFile, listArray });
     await plugin.init();
     const result = await plugin.load();
     await plugin.validate(result);

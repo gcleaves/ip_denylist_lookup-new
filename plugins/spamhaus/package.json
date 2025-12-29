@@ -1,0 +1,10 @@
+{
+  "name": "ip_denylist_plugin_spamhaus",
+  "version": "1.0.0",
+  "dependencies": {
+    "axios": "^1.7.0",
+    "ip-utils": "^2.4.0"
+  },
+  "main": "index.js"
+}
+

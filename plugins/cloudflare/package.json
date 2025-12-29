@@ -1,0 +1,11 @@
+{
+  "name": "ip_denylist_plugin_cloudflare",
+  "version": "1.0.0",
+  "dependencies": {
+    "axios": "^0.21.0",
+    "ip-utils": "^2.4.0",
+    "ioredis": "^4.19.1"
+  },
+  "main": "index.js"
+}
+

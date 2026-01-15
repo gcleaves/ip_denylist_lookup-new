@@ -69,7 +69,7 @@ function createWebSocketServer({ server, lookupIP, config }) {
      * @param {string} connectionId - Connection identifier
      */
     async function handleLookup(ws, data, connectionId) {
-        const { ip, requestId, dronebl } = data;
+        const { ip, requestId, dronebl, nocache, skip_cache } = data;
 
         if (!ip || typeof ip !== 'string') {
             sendError(ws, 'Invalid request: ip is required', requestId);
@@ -78,7 +78,9 @@ function createWebSocketServer({ server, lookupIP, config }) {
 
         try {
             const includeDroneBL = [1, '1', true, 'true'].includes(dronebl);
-            const result = await lookupIP(ip, includeDroneBL);
+            const skipCache = [1, '1', true, 'true'].includes(nocache) || 
+                             [1, '1', true, 'true'].includes(skip_cache);
+            const result = await lookupIP(ip, includeDroneBL, skipCache);
             const response = {
                 type: 'result',
                 ip,
@@ -99,7 +101,7 @@ function createWebSocketServer({ server, lookupIP, config }) {
      * @param {string} connectionId - Connection identifier
      */
     async function handleBatch(ws, data, connectionId) {
-        const { ips, requestId, dronebl } = data;
+        const { ips, requestId, dronebl, nocache, skip_cache } = data;
 
         if (!Array.isArray(ips) || ips.length === 0) {
             sendError(ws, 'Invalid request: ips must be a non-empty array', requestId);
@@ -113,11 +115,13 @@ function createWebSocketServer({ server, lookupIP, config }) {
 
         try {
             const includeDroneBL = [1, '1', true, 'true'].includes(dronebl);
+            const skipCache = [1, '1', true, 'true'].includes(nocache) || 
+                             [1, '1', true, 'true'].includes(skip_cache);
             const results = {};
             await Promise.all(
                 ips.map(async (ip) => {
                     try {
-                        const result = await lookupIP(ip, includeDroneBL);
+                        const result = await lookupIP(ip, includeDroneBL, skipCache);
                         results[ip] = result === null ? {} : result;
                     } catch (error) {
                         wsLogger.warn({ error: error.message, ip }, 'Batch lookup item error');

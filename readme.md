@@ -196,6 +196,7 @@ Lookup the requesting client's IP address.
 - `csv` - Return CSV format (set to `1`, `true`, or `'true'`)
 - `header` - Include CSV header (default: `true`, set to `0` or `false` to disable)
 - `dronebl` - Include DroneBL DNS lookup (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
+- `nocache` or `skip_cache` - Skip cache lookup and perform fresh lookup (set to `1`, `true`, or `'true'`). Default: `false`. Note: Results are still cached after lookup
 
 **Response:**
 ```json
@@ -251,6 +252,7 @@ Batch lookup multiple IP addresses.
 - `json` - Return JSON format (set to `1`, `true`, or `'true'`). When set, response will be JSON regardless of request `Content-Type`
 - `header` - Include CSV header when returning CSV format (default: `true`, set to `0` or `false` to disable)
 - `dronebl` - Include DroneBL DNS lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
+- `nocache` or `skip_cache` - Skip cache lookup and perform fresh lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false`. Note: Results are still cached after lookup
 
 **Response Format:**
 - **JSON** (default when `Content-Type: application/json` or `?json=true`):
@@ -285,6 +287,7 @@ Upload a file containing IP addresses for batch lookup.
 **Query Parameters:**
 - `header` - Include CSV header when returning CSV format (default: `true`, set to `0` or `false` to disable)
 - `dronebl` - Include DroneBL DNS lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false` (disabled for performance)
+- `nocache` or `skip_cache` - Skip cache lookup and perform fresh lookup for all IPs (set to `1`, `true`, or `'true'`). Default: `false`. Note: Results are still cached after lookup
 
 **Response:**
 - Returns results in same format as uploaded file (JSON or CSV)
@@ -303,6 +306,7 @@ Connect to `ws://localhost:3000/ws` (or your configured prefix + `/ws`).
   "type": "lookup",
   "ip": "192.168.1.1",
   "dronebl": false,
+  "nocache": false,
   "requestId": "optional-request-id"
 }
 ```
@@ -313,11 +317,14 @@ Connect to `ws://localhost:3000/ws` (or your configured prefix + `/ws`).
   "type": "batch",
   "ips": ["192.168.1.1", "10.0.0.1"],
   "dronebl": false,
+  "nocache": false,
   "requestId": "optional-request-id"
 }
 ```
 
-**Note:** The `dronebl` field is optional and defaults to `false`. Set to `true` to include DroneBL DNS lookup (slower but includes additional reputation data).
+**Note:** 
+- The `dronebl` field is optional and defaults to `false`. Set to `true` to include DroneBL DNS lookup (slower but includes additional reputation data).
+- The `nocache` or `skip_cache` field is optional and defaults to `false`. Set to `true` to skip cache lookup and perform fresh lookup. Results are still cached after lookup for future requests.
 
 3. **Ping:**
 ```json
@@ -506,6 +513,7 @@ The service maintains backward compatibility with existing HTTP API endpoints. K
 
 - **Lookup Speed**: < 3ms per IP lookup (typical, cached results are faster)
 - **Cached Lookups**: Sub-millisecond response for cached IPs (48-hour cache TTL)
+- **Cache Bypass**: Use `nocache=true` or `skip_cache=true` to force fresh lookup (results still cached)
 - **Throughput**: Handles 1000+ requests/second per instance
 - **Memory**: ~1GB at rest, ~2.7GB during loading
 - **Redis Storage**: ~420MB for full Firehol dataset + cache storage

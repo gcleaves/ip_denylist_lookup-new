@@ -79,6 +79,30 @@ function closeRedis() {
 }
 
 /**
+ * DroneBL type code to category mapping
+ * Based on https://dronebl.org/docs/howtouse
+ */
+const DRONEBL_CATEGORIES = {
+    2: 'Sample',
+    3: 'IRC Drone',
+    5: 'Bottler',
+    6: 'Unknown spambot or drone',
+    7: 'DDOS Drone',
+    8: 'SOCKS Proxy',
+    9: 'HTTP Proxy',
+    10: 'ProxyChain',
+    11: 'Web Page Proxy',
+    12: 'Open DNS Resolver',
+    13: 'Brute force attackers',
+    14: 'Open Wingate Proxy',
+    15: 'Compromised router / gateway',
+    16: 'Autorooting worms',
+    17: 'Automatically determined botnet IPs (experimental)',
+    18: 'DNS/MX type hostname detected on IRC',
+    255: 'Unknown'
+};
+
+/**
  * Check if DroneBL lookup should be enabled based on query parameter
  * @param {Object} query - Request query object
  * @returns {boolean} True if DroneBL should be included
@@ -88,9 +112,19 @@ function shouldIncludeDroneBL(query) {
 }
 
 /**
+ * Check if cache should be skipped based on query parameter
+ * @param {Object} query - Request query object
+ * @returns {boolean} True if cache should be skipped
+ */
+function shouldSkipCache(query) {
+    return [1, '1', true, 'true'].includes(query.nocache) || 
+           [1, '1', true, 'true'].includes(query.skip_cache);
+}
+
+/**
  * Lookup IP address in DroneBL via DNS
  * @param {string} ip - IP address to lookup
- * @returns {Promise<Object|null>} DroneBL result with type code, or null if not listed
+ * @returns {Promise<Object|null>} DroneBL result with type code and category, or null if not listed
  */
 const lookupDroneBL = async (ip) => {
     if (!ipTools.isValidIpv4(ip)) {
@@ -113,10 +147,13 @@ const lookupDroneBL = async (ip) => {
             const typeParts = typeIP.split('.');
             const typeCode = parseInt(typeParts[typeParts.length - 1], 10);
             
+            const category = DRONEBL_CATEGORIES[typeCode] || 'Unknown';
+            
             return {
                 name: `dronebl_type_${typeCode}`,
                 source: 'dronebl',
-                type: typeCode
+                type: typeCode,
+                category: category
             };
         }
         
@@ -136,9 +173,10 @@ const lookupDroneBL = async (ip) => {
  * Lookup IP address in Redis and optionally DroneBL
  * @param {string} ip - IP address to lookup
  * @param {boolean} includeDroneBL - Whether to include DroneBL DNS lookup (default: false)
+ * @param {boolean} skipCache - Whether to skip cache lookup and perform fresh lookup (default: false)
  * @returns {Promise<Object|null|false>} Lookup result
  */
-const lookupIP = async (ip, includeDroneBL = false) => {
+const lookupIP = async (ip, includeDroneBL = false, skipCache = false) => {
     if (!ipTools.isValidIpv4(ip)) {
         return false;
     }
@@ -149,23 +187,25 @@ const lookupIP = async (ip, includeDroneBL = false) => {
         const cacheKey = redisPrefix + 'cache:' + ip + (includeDroneBL ? ':dronebl' : '');
         const cacheTTL = 48 * 60 * 60; // 48 hours in seconds
 
-        // Check cache first
-        const cachedResult = await redisClient.get(cacheKey);
-        if (cachedResult !== null) {
-            // Cache hit - return immediately without Redis skip list or DNS lookup
-            // Handle both null (not found) and result object
-            if (cachedResult === 'null') {
-                return null;
-            }
-            try {
-                return JSON.parse(cachedResult);
-            } catch (parseError) {
-                // If cache value is corrupted, log and continue to fresh lookup
-                logger.warn({ error: parseError.message, ip }, 'Failed to parse cached result, performing fresh lookup');
+        // Check cache first (unless skipCache is true)
+        if (!skipCache) {
+            const cachedResult = await redisClient.get(cacheKey);
+            if (cachedResult !== null) {
+                // Cache hit - return immediately without Redis skip list or DNS lookup
+                // Handle both null (not found) and result object
+                if (cachedResult === 'null') {
+                    return null;
+                }
+                try {
+                    return JSON.parse(cachedResult);
+                } catch (parseError) {
+                    // If cache value is corrupted, log and continue to fresh lookup
+                    logger.warn({ error: parseError.message, ip }, 'Failed to parse cached result, performing fresh lookup');
+                }
             }
         }
 
-        // Cache miss - perform lookup
+        // Cache miss or skipCache=true - perform fresh lookup
         const long = ipTools.toLong(ip);
         
         // Query Redis skip list and optionally DroneBL in parallel
@@ -474,8 +514,9 @@ exports.serve = (port, rp, prefix) => {
             }
 
             const includeDroneBL = shouldIncludeDroneBL(req.query);
+            const skipCache = shouldSkipCache(req.query);
             await Promise.all(ips.map(async ip => {
-                const list = await lookupIP(ip, includeDroneBL);
+                const list = await lookupIP(ip, includeDroneBL, skipCache);
                 response[ip] = (list === null) ? [] : list;
             }));
 
@@ -622,7 +663,8 @@ exports.serve = (port, rp, prefix) => {
             const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
             const response = { ip };
             const includeDroneBL = shouldIncludeDroneBL(req.query);
-            const ipLists = await lookupIP(ip, includeDroneBL);
+            const skipCache = shouldSkipCache(req.query);
+            const ipLists = await lookupIP(ip, includeDroneBL, skipCache);
             response.result = ipLists || {};
 
             if ([1, '1', true, 'true'].includes(req.query.csv)) {
@@ -652,7 +694,8 @@ exports.serve = (port, rp, prefix) => {
         try {
             const ip = req.params.ip;
             const includeDroneBL = shouldIncludeDroneBL(req.query);
-            const ipLists = await lookupIP(ip, includeDroneBL);
+            const skipCache = shouldSkipCache(req.query);
+            const ipLists = await lookupIP(ip, includeDroneBL, skipCache);
 
             if (ipLists === false) {
                 return res.status(422).json({ error: 'invalid ipv4' });
